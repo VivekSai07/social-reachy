@@ -1,0 +1,18 @@
+# Available tools for this profile, remove comments to activate them
+# or use 'all' to enable all built-in tools
+
+dance
+stop_dance
+play_emotion
+stop_emotion
+idle_do_nothing
+move_head
+go_to_sleep
+remember
+forget
+gaze_tracking
+
+# Not enabled: camera, sweep_look, custom_tool (out of scope for now),
+# head_tracking (replaced by gaze_tracking -- see tools/gaze_tracking.py),
+# and the pollen_robotics_*__search_web/get_weather/get_time MCP tools
+# (external network dependencies, out of scope for now).

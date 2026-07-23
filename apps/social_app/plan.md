@@ -120,7 +120,15 @@ visually confirmed working** — gaze tracking runs smoothly against a real
 face in the MuJoCo viewer (tested on a second machine after cloning the
 repo).
 
-Phase 2: architecture researched and documented above; not implemented.
-Per CLAUDE.md's Workflow rule, implementation happens on a separate branch
-via `/feature-dev:feature-dev` — resolve the two open decisions above
-first.
+Phase 2: **implemented**, in a new app directory `apps/companion/` (resolving
+open decision 2 above — a fresh app, not a `social_app` retrofit) on branch
+`feature/ai-brain-memory`, via `/feature-dev:feature-dev` per CLAUDE.md's
+Workflow rule. Open decision 1 above (gaze/conversation-loop merge) is
+resolved by `apps/companion/gaze_move.py`'s `GazeMove`, modeled on the
+template's own `BreathingMove`. Passed structural checks, import smoke
+tests, a quality review (three issues found and fixed), and this repo's own
+`apps/social_app` was re-verified working after the shared-venv
+`reachy-mini` upgrade this pulled in. **Not yet tested against the sim by a
+human** (needs a mic/speakers + webcam) — per CLAUDE.md's merge-gate rule,
+this only merges to `main` after that test passes and the user confirms.
+Full details: `apps/companion/plan.md`.
