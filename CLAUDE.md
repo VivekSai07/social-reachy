@@ -6,9 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 HRI (human-robot interaction) prototyping on [Reachy Mini](https://huggingface.co/docs/reachy_mini),
 developed against the MuJoCo simulator (`--sim`) before any physical robot is
-involved. The project is brand new: `apps/social_app` is currently the
-unmodified default scaffold (a placeholder head/antenna wiggle), not yet real
-HRI behavior.
+involved. `apps/social_app` is the project's one app, built in phases (see
+its `plan.md` for the full rationale):
+
+- **Phase 1 (implemented)**: gaze/attention — webcam-based face tracking
+  (`social_app/perception.py`) drives the simulated head via a smoothed,
+  hysteresis-gated control loop (`social_app/gaze.py`,
+  `social_app/main.py`).
+- **Phase 2 (not started)**: friendly, human-like conversation (LLM +
+  speech), layered on top of phase 1 rather than replacing it.
 
 ## Environment
 
@@ -49,6 +55,17 @@ only checks app packaging/structure, not behavior.
   messages. If one slips into a commit, rewrite that commit rather than
   papering over it with a follow-up commit.
 
+## Workflow
+
+- When implementing a new idea or feature, invoke the
+  `/feature-dev:feature-dev` skill and do the work on a separate branch —
+  never directly on `main`. Standard flow: branch → implement → verify →
+  merge/PR, so `main` stays untouched until the work is ready.
+- After finishing a development task (before considering it done), check
+  whether this file is still accurate — architecture, commands, phase
+  status — and update it as part of wrapping up the work, not as an
+  afterthought.
+
 ## Architecture
 
 - `apps/<name>/` — one Reachy Mini **app** per directory. The daemon runs
@@ -68,10 +85,19 @@ only checks app packaging/structure, not behavior.
     daemon and `check`/`publish` depend on. `--publish` immediately creates a
     **public** Hugging Face Space — never run it without the user explicitly
     asking for it.
-  - `default` template = blank/minimal skeleton (what `social_app` is now).
+  - `default` template = blank/minimal skeleton (what `social_app` was
+    scaffolded from, since extended with phase-1 gaze tracking).
     `conversation` template forks the reference conversation app (VAD + LLM +
-    TTS + movement fusion already wired) — switch to it if a prototype needs
-    spoken dialogue rather than re-implementing that plumbing by hand.
+    TTS + movement fusion already wired) — likely what phase 2 will migrate
+    to, rather than hand-rolling that plumbing into `social_app` as-is.
+- `apps/social_app/social_app/` — three files, one responsibility each, so
+  there is exactly one `set_target()` call site in the app (a hard rule from
+  the upstream SDK's `control-loops.md`): `perception.py` (webcam capture +
+  face detection on a background thread, reusing `reachy_mini.vision.*`
+  internals), `gaze.py` (pure, I/O-free pose smoothing/hysteresis), `main.py`
+  (the fixed-rate control loop and sole `set_target()` call). This split is
+  deliberate so a future phase-2 control loop can reuse `gaze.py`/
+  `perception.py` unchanged.
 - `apps/social_app/plan.md` — requirements/approach doc for that app,
   written before real behavior logic goes into `main.py` (convention from the
   upstream SDK's `AGENTS.md`: scaffold → plan → get sign-off → implement).
