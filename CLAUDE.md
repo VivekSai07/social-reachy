@@ -13,8 +13,14 @@ its `plan.md` for the full rationale):
   (`social_app/perception.py`) drives the simulated head via a smoothed,
   hysteresis-gated control loop (`social_app/gaze.py`,
   `social_app/main.py`).
-- **Phase 2 (not started)**: friendly, human-like conversation (LLM +
-  speech), layered on top of phase 1 rather than replacing it.
+- **Phase 2 (not started, architecture researched)**: friendly, human-like
+  conversation with persistent, temporally-aware memory across sessions,
+  layered on the `reachy-mini-app-assistant --template conversation`
+  scaffold (Hugging Face Realtime backend) rather than replacing phase 1.
+  Before starting this phase, read `docs/ai_brain_notes.md` (conversation
+  template architecture) and the Phase 2 section of `apps/social_app/plan.md`
+  (planned extension + two open decisions) — both already researched, don't
+  re-derive them.
 
 ## Environment
 

@@ -10,9 +10,10 @@ sign-off below.
   tested against the MuJoCo simulator. Sim only — no physical hardware.
 - Phase 1 (implemented): gaze/attention — track a human face via the
   laptop's own webcam and turn the simulated head to follow it.
-- Phase 2 (future, not started): friendly, human-like conversational
-  behavior (LLM + speech), structured to build on phase 1 rather than
-  replace it.
+- Phase 2 (future, not started, architecture researched and documented
+  below): friendly, human-like conversational behavior with persistent,
+  temporally-aware memory across sessions — an "AI brain" that knows time
+  has passed between conversations and keeps a consistent buddy tone.
 
 ## Answers (from user, resolving the prior open questions)
 
@@ -62,14 +63,64 @@ coordinate frame): the sign of `yaw_sign`/`pitch_sign` in `GazeConfig`
 (`gaze.py`), and whether the default gain constants feel right. Expected
 tuning step, not a bug — see verification section of the plan file above.
 
+## Technical approach (phase 2 — "AI brain," researched, not implemented)
+
+Full research and rationale:
+`C:\Users\Vivek Sai\.claude\plans\answers-to-your-questions-synchronous-dewdrop.md`
+(the plan-mode session that produced this section) and
+`docs/ai_brain_notes.md` (condensed reference on the conversation
+template's actual architecture — read that before starting phase 2 work).
+
+**Backend decision (confirmed with user)**: build on top of
+`reachy-mini-app-assistant create --template conversation` as-is — Hugging
+Face's hosted Realtime speech-to-speech backend (no API key needed in
+`deployed` mode) — rather than rebuilding STT/LLM/TTS/tool-calling around a
+different provider.
+
+**Key finding**: the conversation template already ships a persistent
+memory system (`memory.py` JSON fact-store + `remember`/`forget` tools +
+a static persona file at `profiles/default/instructions.txt` that's already
+close to the "friendly buddy" tone wanted). Phase 2 is an *extension* of
+that, not a cold build. The actual gap is timestamps: nothing in the
+existing system tracks *when*, so it can't express "it's been 2 days" or
+recap what was discussed last time.
+
+**Planned extension**: one additional local SQLite file, `sessions.db`
+(stdlib `sqlite3`, zero new dependencies), alongside — not replacing — the
+existing fact-store:
+- `sessions` table: `session_id, start_ts, end_ts, summary`. `summary` is
+  one LLM call at session end, triggered from the existing
+  `tools/go_to_sleep.py` code path (the natural "conversation is ending"
+  hook).
+- At next session start: load the last row's `end_ts` + `summary`, compute
+  the time delta, inject both into the system prompt at the same point
+  `format_memory_for_prompt()` already uses in `prompts.py`.
+- Graduate to embedding-based retrieval (`sqlite-vec`, an additive SQLite
+  extension) only once flat summaries stop scaling (~30-50 sessions) — not
+  built now.
+
+**Two open decisions to resolve before implementing** (deliberately left
+open by the research pass, not analytically resolvable without hands-on
+experimentation):
+1. How phase 1's `gaze.py`/`perception.py` control loop merges with the
+   conversation template's own tool-call → queue → control-loop pattern —
+   both must ultimately share the one `set_target()` call site the SDK
+   requires. (`gaze.py`/`perception.py` were deliberately built I/O-decoupled
+   in phase 1 specifically so this merge is additive, not a rewrite.)
+2. Which app directory phase 2 lives in — re-scaffolding `social_app`
+   itself with `--template conversation` (needs care not to destroy the
+   phase-1 code) vs. scaffolding a fresh app and porting `gaze.py`/
+   `perception.py` into it.
+
 ## Status
 
-Phase 1 implemented and passing `reachy-mini-app-assistant check` plus a
-standalone sanity check of the smoothing/hysteresis logic. **Not yet
-visually verified against a real face in the MuJoCo viewer** — that step
-needs a human watching the sim window while moving in front of the webcam
-(see verification steps in the plan file above), including the expected
-sign/gain tuning pass.
+Phase 1: implemented, passing `reachy-mini-app-assistant check` and a
+standalone sanity check of the smoothing/hysteresis logic, **and now
+visually confirmed working** — gaze tracking runs smoothly against a real
+face in the MuJoCo viewer (tested on a second machine after cloning the
+repo).
 
-Phase 2 (conversation) is intentionally not started — revisit this file
-before beginning it.
+Phase 2: architecture researched and documented above; not implemented.
+Per CLAUDE.md's Workflow rule, implementation happens on a separate branch
+via `/feature-dev:feature-dev` — resolve the two open decisions above
+first.
