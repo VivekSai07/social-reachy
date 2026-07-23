@@ -67,6 +67,10 @@ only checks app packaging/structure, not behavior.
   `/feature-dev:feature-dev` skill and do the work on a separate branch —
   never directly on `main`. Standard flow: branch → implement → verify →
   merge/PR, so `main` stays untouched until the work is ready.
+- Never merge a feature branch into `main` unilaterally. The user tests the
+  implementation locally (e.g. on their laptop) first; only merge into
+  `main` — with a clear merge message — after they explicitly confirm that
+  test passed.
 - After finishing a development task (before considering it done), check
   whether this file is still accurate — architecture, commands, phase
   status — and update it as part of wrapping up the work, not as an
