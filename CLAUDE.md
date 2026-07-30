@@ -6,21 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 HRI (human-robot interaction) prototyping on [Reachy Mini](https://huggingface.co/docs/reachy_mini),
 developed against the MuJoCo simulator (`--sim`) before any physical robot is
-involved. `apps/social_app` is the project's one app, built in phases (see
-its `plan.md` for the full rationale):
+involved. Two apps, built in phases (the daemon runs **one at a time** — see
+"Architecture" below):
 
-- **Phase 1 (implemented)**: gaze/attention — webcam-based face tracking
-  (`social_app/perception.py`) drives the simulated head via a smoothed,
-  hysteresis-gated control loop (`social_app/gaze.py`,
-  `social_app/main.py`).
-- **Phase 2 (not started, architecture researched)**: friendly, human-like
-  conversation with persistent, temporally-aware memory across sessions,
-  layered on the `reachy-mini-app-assistant --template conversation`
-  scaffold (Hugging Face Realtime backend) rather than replacing phase 1.
-  Before starting this phase, read `docs/ai_brain_notes.md` (conversation
-  template architecture) and the Phase 2 section of `apps/social_app/plan.md`
-  (planned extension + two open decisions) — both already researched, don't
-  re-derive them.
+- **Phase 1 — `apps/social_app` (implemented, verified working)**:
+  gaze/attention — webcam-based face tracking (`social_app/perception.py`)
+  drives the simulated head via a smoothed, hysteresis-gated control loop
+  (`social_app/gaze.py`, `social_app/main.py`). See its `plan.md`.
+- **Phase 2 — `apps/companion` (implemented, on branch `feature/ai-brain-memory`,
+  awaiting a human sim test before merge — see the Workflow merge-gate rule
+  below)**: friendly conversation with persistent, temporally-aware memory
+  across sessions, on the `reachy-mini-app-assistant --template conversation`
+  scaffold (Hugging Face Realtime backend) — phase 1's gaze code ported in
+  as a `GazeMove`. See its `plan.md` for what was built, and
+  `docs/ai_brain_notes.md` for the upstream template's architecture
+  (including scaffolding-tool bugs found — see Environment below).
 
 ## Environment
 
@@ -32,7 +32,24 @@ friction here.
 - Python is pinned to **3.12** (`.python-version`), Reachy Mini supports
   3.10–3.12. venv lives at `.venv/`.
 - Setup: `uv venv .venv --python 3.12 && uv pip install --python .venv "reachy-mini[mujoco]"`
-- The app is installed editable: `uv pip install --python .venv -e apps/social_app`
+- Each app is installed editable: `uv pip install --python .venv -e apps/social_app`
+  and `uv pip install --python .venv -e apps/companion`. `apps/companion`'s
+  `pyproject.toml` requires `reachy-mini>=1.10.0rc2`, which bumps the shared
+  venv above `apps/social_app`'s originally-installed 1.9.0 — re-verify
+  `apps/social_app` (`reachy-mini-app-assistant check`) after any dependency
+  change here, since both apps share one venv.
+- **`reachy-mini-app-assistant create --template conversation` is broken in
+  the installed SDK** (as of `reachy-mini` 1.9.0/1.10.0rc2) and needed 3
+  local patches to `.venv/Lib/site-packages/reachy_mini/apps/fork_conversation.py`
+  before `apps/companion` could be scaffolded (wrong hardcoded git branch,
+  a Windows read-only-file cleanup bug, and a cp1252/UTF-8 decode crash —
+  worked around with `$env:PYTHONUTF8="1"`). These patches live only in the
+  gitignored `.venv/`, so **re-scaffolding a new `conversation`-template app
+  on a fresh clone will hit the same bugs again** — full patch content and a
+  4th (structural, non-Windows-specific) profile-location bug are documented
+  in `apps/companion/plan.md`'s "Known upstream bugs" section; check there
+  before re-patching blind, and check whether upstream has fixed any of
+  these first.
 
 ## Commands
 
@@ -41,11 +58,16 @@ friction here.
 .\scripts\run_sim.ps1                  # --scene empty (default)
 .\scripts\run_sim.ps1 -Scene minimal   # table + objects
 
-# Run the app directly against a running daemon
+# Run an app directly against a running daemon (only one app at a time)
 .venv\Scripts\python.exe -m social_app.main
+.venv\Scripts\python.exe -m companion.main --gradio   # companion needs mic/speakers too
 
 # Validate an app's structure/entry points (does a real install/uninstall test)
 .venv\Scripts\reachy-mini-app-assistant.exe check apps\social_app
+.venv\Scripts\reachy-mini-app-assistant.exe check apps\companion
+
+# companion's own test suite (pytest/pytest-asyncio installed separately, not a project-wide dependency)
+cd apps\companion; ..\..\.venv\Scripts\python.exe -m pytest
 ```
 
 Daemon REST/WebSocket API + docs: `http://localhost:8000/docs` once
@@ -98,8 +120,9 @@ only checks app packaging/structure, not behavior.
   - `default` template = blank/minimal skeleton (what `social_app` was
     scaffolded from, since extended with phase-1 gaze tracking).
     `conversation` template forks the reference conversation app (VAD + LLM +
-    TTS + movement fusion already wired) — likely what phase 2 will migrate
-    to, rather than hand-rolling that plumbing into `social_app` as-is.
+    TTS + movement fusion already wired) — what `apps/companion` (phase 2)
+    is built on. See the Environment section above before re-scaffolding
+    with this template — the CLI has known bugs that need patching first.
 - `apps/social_app/social_app/` — three files, one responsibility each, so
   there is exactly one `set_target()` call site in the app (a hard rule from
   the upstream SDK's `control-loops.md`): `perception.py` (webcam capture +
@@ -107,7 +130,21 @@ only checks app packaging/structure, not behavior.
   internals), `gaze.py` (pure, I/O-free pose smoothing/hysteresis), `main.py`
   (the fixed-rate control loop and sole `set_target()` call). This split is
   deliberate so a future phase-2 control loop can reuse `gaze.py`/
-  `perception.py` unchanged.
+  `perception.py` unchanged — confirmed by `apps/companion`, which does
+  exactly that.
+- `apps/companion/src/companion/` — the conversation template's own
+  structure (much larger than `social_app`'s, see its own `plan.md` and
+  `docs/ai_brain_notes.md` for the full architecture), extended with:
+  `perception.py`/`gaze.py` (ported verbatim from `social_app`), `gaze_move.py`
+  (`GazeMove`, a continuous `Move` modeled on the template's own
+  `BreathingMove` — the template's `MovementManager` in `moves.py` still
+  owns the single `set_target()` call site; `GazeMove` just competes for the
+  same move-queue slot as breathing/dance/emotion moves, evicted the same
+  way when a real move plays), `sessions.py` (SQLite session log for
+  temporal awareness, sibling to the template's existing `memory.py` fact
+  store), and `tools/gaze_tracking.py` (an LLM-callable tool toggling gaze,
+  replacing the template's daemon-side `head_tracking` tool — useless in sim
+  for the same reason `social_app`'s webcam tracker exists).
 - `apps/social_app/plan.md` — requirements/approach doc for that app,
   written before real behavior logic goes into `main.py` (convention from the
   upstream SDK's `AGENTS.md`: scaffold → plan → get sign-off → implement).

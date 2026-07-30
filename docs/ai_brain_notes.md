@@ -8,6 +8,14 @@ here — same repo). Kept local for the same reason as
 `reachy_mini_notes.md`: so phase 2 ("AI brain," see `apps/social_app/plan.md`)
 doesn't need to re-derive this, including on a different machine.
 
+**Implementation status**: phase 2 is now built, in `apps/companion/` (on
+branch `feature/ai-brain-memory`, pending user testing before merge to
+`main`). This file is the pre-implementation research on the *upstream*
+template's architecture and is still accurate as general reference, but for
+what was actually built — including four scaffolding-tool bugs found and
+worked around, and one real gotcha in the persona-file section below — see
+`apps/companion/plan.md`.
+
 ## Backend: Hugging Face Realtime, not a generic chat API
 
 This is **not** built on OpenAI/Anthropic chat-completions or Ollama. It's
@@ -37,6 +45,18 @@ infrastructure.
 `mad_scientist_assistant`, `victorian_butler`) — each just its own
 `instructions.txt` / `voice.txt` / `greeting.txt`. Loaded by
 `get_session_instructions()` in `src/reachy_mini_conversation_app/prompts.py`.
+
+**Gotcha confirmed during implementation**: none of this survives
+`reachy-mini-app-assistant create --template conversation`. The CLI's fork
+step generates a placeholder persona into a new `_<app_name>_locked_profile`
+folder and deletes every other profile, including `default` — the real,
+well-tuned persona text above only exists in the upstream repo, not in what
+gets scaffolded. It has to be manually carried over. Worse, the CLI puts
+the new locked-profile folder under `src/<app_name>/profiles/`, but
+`config.py` actually resolves profiles from the top-level `<app_name>/profiles/`
+directory for a source checkout — a real mismatch, not just a missing-persona
+issue. See `apps/companion/plan.md`'s "Known upstream bugs" section for the
+full list and the fix applied.
 
 ## Existing memory system (fact-store, no timestamps)
 
