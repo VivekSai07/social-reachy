@@ -68,3 +68,12 @@ src/companion/profiles/user_personalities/
 external_content/external_profiles/*
 external_content/external_tools/*
 external_content/installed_tool_spaces.json
+
+# Local memory/session data (personal, never tracked). instance_path
+# resolves to this package's own source directory when run from an
+# editable install (see reachy_mini's ReachyMiniApp._get_instance_path()),
+# so both the fact-store and the session log land here rather than in an
+# XDG data dir.
+src/companion/memory.v1.json
+src/companion/.memory.v1.json.*.tmp
+src/companion/sessions.v1.db*
