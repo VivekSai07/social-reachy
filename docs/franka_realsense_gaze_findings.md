@@ -82,3 +82,100 @@ sequenceDiagram
 | `min_area_frac` | Spurious detections of faces too small/far away to be a meaningful gaze target. |
 | `max_jump` | Implausible frame-to-frame teleports (e.g. detector jumping to a different face or a false positive) being accepted as continuous tracking. |
 | `max_misses` | Dropping the tracked face too eagerly on a handful of missed detections (blinks, brief occlusion, a bad frame) — tolerates up to N consecutive misses before giving up. |
+
+## 2. Gaze smoothing (pure function, I/O-free)
+
+`apps/social_app/social_app/gaze.py`'s `GazeController.update()`
+(`gaze.py:48-87`) turns the latest `FaceObservation` into a smoothed
+`(yaw_deg, pitch_deg)` head-pose target, once per control-loop tick.
+
+**Why no I/O dependencies.** `GazeController` takes no camera, queue, or
+robot handle — just a `FaceObservation | None` and a timestamp in, a pose
+tuple out. This is deliberate: it lets a future or different control loop
+call the same `update()` without extracting or rewriting the logic. That
+reuse already happened once — `apps/companion/gaze_move.py`'s `GazeMove`
+consumes `GazeController` directly rather than reimplementing smoothing, per
+`apps/social_app/plan.md` lines 105-113 (phase 1's `gaze.py`/`perception.py`
+were "deliberately built I/O-decoupled... specifically so this merge is
+additive, not a rewrite") and lines 126-127 (confirming the resolution:
+"Open decision 1 above (gaze/conversation-loop merge) is resolved by
+`apps/companion/gaze_move.py`'s `GazeMove`").
+
+**Two independent timeout tiers.** `update()` tracks two separate
+timestamps — `_last_observation_at` (any tick from the tracker thread,
+face found or not) and `_last_face_seen_at` (last tick where a face was
+actually found) — and gates on two separate durations:
+
+- `face_grace_period_s = 0.4` — coast through a single dropped detector
+  frame (a blink, a bad frame) without snapping the target to idle sway.
+- `observation_timeout_s = 1.0` — a longer, coarser check for the tracker
+  *thread* itself being stalled or dead (no ticks at all, not just no
+  face).
+
+These are different failure modes on purpose: a momentary "face not found
+this frame" and "the background thread stopped producing observations
+entirely" need different tolerances, so they get independent timers rather
+than one shared one.
+
+**Idle-sway fallback.** When either timer condition fails —
+`tracker_alive` is false or `face_recently_seen` is false — the target
+becomes a slow `sin()` wave (`idle_amplitude_deg`, `idle_period_s`) instead
+of a fixed pose. This is what stops the head locking into a static position
+when no one is present; per `plan.md`, `apps/social_app`'s Environment/
+Status notes independently confirm this behavior was visually verified
+against a real face in the MuJoCo viewer.
+
+**EMA runs unconditionally, after target selection.** Verified directly
+against `gaze.py:56-87`: target selection (real face target vs. idle sway
+target) happens first and is branched — `if tracker_alive and
+face_recently_seen: target_yaw, target_pitch = ...; else: target_yaw =
+idle sin(...), target_pitch = 0.0`. But the EMA update —
+
+```python
+self._yaw_deg += cfg.smoothing_alpha * (target_yaw - self._yaw_deg)
+self._pitch_deg += cfg.smoothing_alpha * (target_pitch - self._pitch_deg)
+```
+
+— sits *after* that `if`/`else` block, at the same indentation level, and
+runs every single call regardless of which branch produced `target_yaw`/
+`target_pitch`. `smoothing_alpha = 0.25` is applied uniformly whether the
+target came from a real face or from idle sway, which is exactly why
+tracking-to-idle transitions don't visibly jump — the same low-pass filter
+smooths across the state boundary, not just within a state.
+
+**Portability warning — flagged prominently, not buried.** `yaw_sign` and
+`pitch_sign` in `GazeConfig` are explicitly *not analytically solvable*:
+per `apps/social_app/plan.md` lines 60-64, "there's no calibration between
+an arbitrary laptop webcam and the robot's coordinate frame" — the correct
+sign depends on the physical/simulated camera and joint coordinate
+conventions and can only be determined by observing which way the head
+turns in the sim viewer and flipping the sign if it's backwards. **This is
+the single most important portability note for a Franka/RealSense port**:
+expect to re-derive `yaw_sign`/`pitch_sign` (and re-tune `yaw_gain_deg`/
+`pitch_gain_deg`) empirically against the new camera/arm frame — there is
+no formula to carry over, only the tuning procedure.
+
+### State diagram
+
+Verified against `gaze.py:68-86`: `tracker_alive` (derived from
+`_last_observation_at` vs. `observation_timeout_s`) and `face_recently_seen`
+(derived from `_last_face_seen_at` vs. `face_grace_period_s`) are exactly
+the two conditions gating tracked-vs-idle target selection, combined with
+`and`. The EMA line runs unconditionally after target selection, not inside
+either branch — confirmed by re-reading `gaze.py:77-86` above.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Tracking: face observation with center != None
+    Tracking --> Tracking: face seen within face_grace_period_s
+    Tracking --> Coasting: no new observation, but < face_grace_period_s since last face
+    Coasting --> Tracking: face reappears
+    Coasting --> Idle: face_grace_period_s exceeded
+    Tracking --> Idle: observation_timeout_s exceeded (tracker stalled)
+    Idle --> Idle: sin() sway target, EMA-smoothed toward it
+    note right of Tracking
+      target = clamp(sign * axis * gain, limit)
+      output += alpha * (target - output)   # EMA, every state
+    end note
+```
