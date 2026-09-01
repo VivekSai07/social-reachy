@@ -1,13 +1,19 @@
 This document traces Reachy Mini's working webcam-driven gaze pipeline
 (`apps/social_app`) from source — perception, smoothing, and control-loop
 integration — and researches, without writing any code, whether and how the
-same architecture could port to a Franka Panda arm with a wrist-mounted
-RealSense camera (eye-in-hand), simulated in MuJoCo. It is a documentation
-spike only: nothing under `apps/` is modified. See the plan this doc was
-produced from —
+same architecture could port to a Franka Panda arm, simulated in MuJoCo. It
+is a documentation spike only: nothing under `apps/` is modified. See the
+plan this doc was produced from —
 `docs/superpowers/plans/2026-09-01-franka-realsense-gaze-research.md` — on
 branch `research/franka-realsense-gaze`, for the task breakdown and
 self-review notes behind sections 1-4 below.
+
+Sections 1-4 evaluate a true eye-in-hand rig (RealSense mounted on the
+Franka's flange, moving with the arm). **Section 5 documents a revised,
+narrower approach chosen after this research** — a world-fixed camera (as
+Reachy already uses) driving a Franka look-at target instead — which
+resolves two of section 4's three flagged research risks outright and is
+the recommended starting point for implementation.
 
 ## 1. Perception layer
 
@@ -431,6 +437,63 @@ flowchart LR
 - Singularity and self-collision avoidance while continuously re-orienting a 7-DOF arm toward a moving target — Reachy's fixed-base head has no equivalent failure mode, but a Franka arm chasing a moving gaze target can drive itself toward a kinematic singularity or into self-collision, and neither is addressed anywhere in this doc.
 - Workspace and redundancy resolution: Franka's 7 DOF are kinematically redundant for a look-at (or even full 6-DOF) target, so an IK solve has a null-space of solutions; which one it picks affects whether the arm sweeps through a sensible, workspace-respecting path while tracking versus an erratic one — unaddressed here.
 - What "idle sway" (`gaze.py:80-83`'s slow `sin()` wave) means ported onto an arm rather than a head: on Reachy it is a small cosmetic head bob with no safety implication; on a Franka arm the same continuous sinusoidal motion is a physical object sweeping through whatever workspace surrounds the robot, a materially different safety question that section 5's MuJoCo `<joint range>` clamp does not address (a range clamp bounds joint angle, not whether continuous idle motion within that range is safe to run unsupervised near people or objects).
+
+## 5. Revised approach — fixed camera, not eye-in-hand
+
+Section 4 above evaluated a true eye-in-hand rig: a RealSense mounted on
+the Franka's flange, moving with the arm. After this research, the user
+decided to build something narrower instead: keep the camera **world-fixed**
+(the laptop webcam, exactly as `apps/social_app` already uses it) and only
+change what the *target* is — instead of computing a head yaw/pitch,
+compute a look-at orientation for the Franka end-effector, so the arm
+appears to track the user's face the way Reachy's head does. The camera
+never moves with the arm and never observes its own motion.
+
+This is a materially different, and materially easier, system than
+section 4 describes — not a variant of it. It resolves both of section 4's
+substantive open risks directly, rather than mitigating them:
+
+- **No control-loop inversion.** Because the camera stays world-fixed, the
+  offset→target mapping stays open-loop, exactly as in Reachy's `gaze.py`
+  (§2, §4 point 4's caveat). `smoothing_alpha` and gain remain cosmetic
+  tuning, not stability-critical loop-gain parameters — the visual-servoing
+  problem in §4 point 4 and the "Loop-gain/latency stability" open question
+  above do not arise here.
+- **No detector domain gap.** The camera sees a real person, so the same
+  `FaceDetector`/`Tracker` pipeline Reachy already uses applies unchanged
+  (§1) — the "YuNet on synthetic MuJoCo-rendered imagery" open question
+  above does not arise either, since no synthetic face asset is needed in
+  the MuJoCo scene at all.
+
+What's left is exactly the "must be rebuilt" list below, minus the two
+items above — narrower, well-trodden robotics work rather than open
+research questions:
+
+- **Target representation**: face offset → look-at point → end-effector
+  orientation (a look-at rotation/quaternion), replacing
+  `create_head_pose(yaw=..., pitch=...)`. Standard rotation math, not a
+  research problem.
+- **Getting there**: an IK step to convert that target orientation into
+  joint angles for the 7-DOF Panda. MuJoCo ships built-in differential IK;
+  third-party options (e.g. `mink`, `pyroki`) exist if a more robust solver
+  is wanted. Solver choice is still open (§4's open questions list), but
+  it's an implementation decision now, not an unresolved research question.
+- **Franka-specific safety**: joint limits, self-collision, and
+  singularities near workspace edges remain real concerns (§4 points 5,
+  open questions) — standard, well-documented robotics-arm concerns with
+  known solution patterns, unlike the eye-in-hand stability question they
+  replace.
+
+Net effect: this collapses section 4's three flagged research risks (control-
+loop inversion, detector domain gap, and — partially — the kinematic/safety
+open questions, which shrink to standard IK/collision engineering rather
+than novel unknowns) down to one, well-scoped implementation task. The
+three-file split this repo already uses for Reachy
+(`perception.py`/`gaze.py`/`main.py`, §1-§3) ports with `perception.py`
+unchanged, `gaze.py`'s smoothing/hysteresis shape unchanged, and only
+`main.py`'s tail end differing: look-at orientation → IK → a single
+joint-command call, replacing `create_head_pose(...)` →
+`reachy_mini.set_target(...)`.
 
 ## Summary
 
