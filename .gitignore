@@ -25,3 +25,6 @@ Thumbs.db
 
 # Logs / local scratch
 *.log
+
+# claude-flow local state
+.claude-flow/
