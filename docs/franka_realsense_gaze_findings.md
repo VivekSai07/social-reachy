@@ -104,7 +104,7 @@ sequenceDiagram
 robot handle — just a `FaceObservation | None` and a timestamp in, a pose
 tuple out. This is deliberate: it lets a future or different control loop
 call the same `update()` without extracting or rewriting the logic. That
-reuse already happened once — `apps/companion/gaze_move.py`'s `GazeMove`
+reuse already happened once — `apps/companion/src/companion/gaze_move.py`'s `GazeMove`
 consumes `GazeController` directly rather than reimplementing smoothing, per
 `apps/social_app/plan.md` lines 105-113 (phase 1's `gaze.py`/`perception.py`
 were "deliberately built I/O-decoupled... specifically so this merge is
@@ -132,9 +132,10 @@ than one shared one.
 `tracker_alive` is false or `face_recently_seen` is false — the target
 becomes a slow `sin()` wave (`idle_amplitude_deg`, `idle_period_s`) instead
 of a fixed pose. This is what stops the head locking into a static position
-when no one is present; per `plan.md`, `apps/social_app`'s Environment/
-Status notes independently confirm this behavior was visually verified
-against a real face in the MuJoCo viewer.
+when no one is present; per `apps/social_app/plan.md:117-121`, phase 1's
+Status section confirms gaze tracking itself was visually verified against
+a real face in the MuJoCo viewer — that note is about tracking, not
+specifically about the idle-sway fallback path.
 
 **EMA runs unconditionally, after target selection.** Verified directly
 against `gaze.py:56-87`: target selection (real face target vs. idle sway
@@ -191,6 +192,14 @@ stateDiagram-v2
     end note
 ```
 
+"Coasting" is a behavioral abstraction for this diagram, not a distinct
+branch in the code: `gaze.py` has exactly one tracked-vs-idle branch
+(`tracker_alive and face_recently_seen`), and what this diagram labels
+Coasting is that same branch replaying the last stored target while
+`tracker_alive` still holds but a new observation hasn't arrived yet — the
+transition into Tracking similarly requires `tracker_alive` to hold, not
+just a non-`None` face center.
+
 ## 3. Control loop integration
 
 `apps/social_app/social_app/main.py:52-88` runs a fixed-rate 50Hz loop
@@ -230,10 +239,10 @@ below matches this.
 
 ```mermaid
 flowchart LR
-    A[tracker.latest\nnon-blocking] --> B[gaze.update\nyaw_deg, pitch_deg]
-    B --> C[create_head_pose\nyaw, pitch, degrees=True]
+    A[tracker.latest<br/>non-blocking] --> B[gaze.update<br/>yaw_deg, pitch_deg]
+    B --> C[create_head_pose<br/>yaw, pitch, degrees=True]
     D[antenna sin animation] --> E
-    C --> E[reachy_mini.set_target\nhead=..., antennas=...]
+    C --> E[reachy_mini.set_target<br/>head=..., antennas=...]
     E -->|SDK clamps to safety limits| F[(Motors / MuJoCo sim)]
     style E fill:#f96,stroke:#333
 ```
@@ -285,9 +294,8 @@ publicly available Franka URDF (DAE meshes converted to OBJ via Blender,
 then `obj2mjcf`; a convex decomposition of link5's collision mesh via
 V-HACD; the URDF loaded into MuJoCo and re-saved as MJCF), requires MuJoCo
 ≥2.3.3, and separately ships a `scene.xml` that adds a textured
-groundplane/skybox/haze around the robot. The model includes gripper/fingertip-related assets around `link7`/`link8`
-(not independently re-verified against the README's own wording for this
-pass), but **does not itself document an explicit flange/end-effector body
+groundplane/skybox/haze around the robot. The model includes gripper/fingertip-related assets around `link7`/`link8`,
+but **does not itself document an explicit flange/end-effector body
 name or a camera-attachment example** — that requires opening the vendored `panda.xml` directly.
 **Not yet verified against the vendored XML**: the exact body name to
 parent a `<camera>` under (commonly a wrist/flange/`attachment_site`-style
@@ -344,6 +352,37 @@ from section 3 (`main.py`'s sole `set_target()` call) is general good
 control-loop practice, not Reachy-specific, and is worth carrying over
 verbatim into any Franka port.
 
+**Eye-in-hand closes a loop that `social_app` never has.** In `social_app`
+the webcam is world-fixed (a laptop camera pointed at the room): moving
+Reachy's head does *not* change what the camera sees, so `gaze.py`'s
+mapping — normalized face offset × gain → an absolute yaw/pitch degree
+value, low-pass filtered by the EMA — is an open-loop position remap. The
+observation and the actuation live in two frames that never interact.
+Mount the RealSense on the Franka's flange and that stops being true: arm
+motion moves the camera, which changes the very offset being measured next
+tick. That is visual servoing, and it changes what the ported code means,
+not just where it runs. Concretely: (1) the *absolute* offset→pose mapping
+becomes meaningless in an eye-in-hand setup — you cannot map "face is 0.3
+right of center" to a fixed joint/Cartesian target the way `gaze.py` maps
+it to a fixed yaw degree, because the arm's own motion keeps changing what
+"0.3 right of center" corresponds to in world space; the correct
+formulation is incremental/velocity control that drives the image-space
+error toward zero each tick, not a one-shot coordinate remap. (2)
+`yaw_gain_deg` and `smoothing_alpha`, which are purely cosmetic tuning
+knobs in `social_app` (they only affect how snappy vs. smooth the head
+looks), become the loop gain and the lag term of a closed feedback loop
+once the camera is on the arm — pushed too high relative to the
+render-and-detect latency in the perception pipeline (section 1's
+background-thread cadence), they can produce oscillation or limit-cycling
+(the arm overshoots the target, the resulting camera motion overshoots the
+correction, and the system never settles) with no equivalent failure mode
+anywhere in the Reachy pipeline, because Reachy's camera never moves in
+response to Reachy's own output. In short: the *dataflow shape* of
+`gaze.py` (observation in, smoothed target out, one function call per
+tick) is portable; the *control semantics* (what the numbers mean and
+whether the loop is stable) are not, and treating this as a drop-in port
+would be a control-theory mistake, not a coding one.
+
 **5. Safety-limit equivalent.** Real Franka Panda joints have documented
 angle/velocity/torque limits, and independently MuJoCo's own
 `<joint range="...">` attribute clamps joint motion at the physics-engine
@@ -358,13 +397,13 @@ vendored, not guessed or assumed to match Reachy's numbers in any way.
 
 ```mermaid
 flowchart LR
-    A[MuJoCo camera\nchild of flange body] --> B[mujoco.Renderer\nrgb frame]
-    B --> C[FaceDetector\nreused from reachy_mini.vision]
-    C --> D[Tracker.select\nreused]
-    D --> E[GazeController-equivalent\nEMA + hysteresis, ported shape]
-    E --> F{Target type differs:\nlook-at point / wrist orientation}
+    A[MuJoCo camera<br/>child of flange body] --> B[mujoco.Renderer<br/>rgb frame]
+    B --> C[FaceDetector<br/>reused from reachy_mini.vision]
+    C --> D[Tracker.select<br/>reused]
+    D --> E[GazeController-equivalent<br/>EMA + hysteresis, ported shape]
+    E --> F{"Target type differs: look-at point / wrist orientation"}
     F --> G[IK or Cartesian controller]
-    G --> H[Single control-apply call\nper physics step]
+    G --> H[Single control-apply call<br/>per physics step]
     H -->|MuJoCo joint range clamps| I[(mj_step / Panda arm)]
     style H fill:#f96,stroke:#333
 ```
@@ -387,6 +426,11 @@ flowchart LR
 - Whether `mujoco.Renderer`-based per-tick rendering can sustain the detector's needed frame rate without starving the physics step loop.
 - Which RealSense model's real extrinsics/FOV to mirror (D405 vs. D435i) for realism if this ever needs to match real hardware later — D405 (7cm–~50cm ideal depth range, ~1.5m max usable) is the common wrist-mount choice for its short minimum depth range, which matters for close-range manipulation; D435i has a much longer range (~0.2m–10m per Intel's published specs) but is less suited to close-in eye-in-hand work. Exact current datasheet numbers should be re-confirmed against Intel's own product/spec pages at spike time rather than trusted from this pass alone.
 - IK solver choice for converting a look-at target into a joint/Cartesian command (out of scope for this research doc — a separate spike).
+- Loop-gain/latency stability once the camera is eye-in-hand: whether `yaw_gain_deg`/`smoothing_alpha`-equivalent values, tuned against the perception pipeline's actual render-and-detect latency, can be chosen to avoid oscillation/limit-cycling in the closed visual-servoing loop described in §4 point 4 — this needs hands-on tuning against real latency, not a value picked in advance.
+- Whether a YuNet ONNX face detector trained on photographic imagery reliably fires on a MuJoCo-rendered synthetic human/face asset (mesh + texture) at all — §4 point 3 establishes that the *plumbing* (frame array in, `FaceObservation` out) is source-agnostic, but that says nothing about detection *accuracy* against rendered rather than photographic imagery, which is exactly the kind of claim this doc otherwise insists needs hands-on verification rather than being assumed.
+- Singularity and self-collision avoidance while continuously re-orienting a 7-DOF arm toward a moving target — Reachy's fixed-base head has no equivalent failure mode, but a Franka arm chasing a moving gaze target can drive itself toward a kinematic singularity or into self-collision, and neither is addressed anywhere in this doc.
+- Workspace and redundancy resolution: Franka's 7 DOF are kinematically redundant for a look-at (or even full 6-DOF) target, so an IK solve has a null-space of solutions; which one it picks affects whether the arm sweeps through a sensible, workspace-respecting path while tracking versus an erratic one — unaddressed here.
+- What "idle sway" (`gaze.py:80-83`'s slow `sin()` wave) means ported onto an arm rather than a head: on Reachy it is a small cosmetic head bob with no safety implication; on a Franka arm the same continuous sinusoidal motion is a physical object sweeping through whatever workspace surrounds the robot, a materially different safety question that section 5's MuJoCo `<joint range>` clamp does not address (a range clamp bounds joint angle, not whether continuous idle motion within that range is safe to run unsupervised near people or objects).
 
 ## Summary
 
@@ -399,7 +443,13 @@ flowchart LR
 - The smoothing/hysteresis *shape* in `gaze.py` — EMA + two-tier timeout
   (grace period vs. tracker-alive) + idle-sway fallback, as a pure,
   I/O-free function taking an observation and returning a target (§2, §4
-  point 4).
+  point 4). **Caveat:** this is *dataflow-shape* portability only, not
+  *control-semantics* portability — with the camera world-fixed (Reachy),
+  the offset→pose mapping is open-loop and `smoothing_alpha`/gain are
+  cosmetic; with the camera eye-in-hand (Franka), the same mapping closes a
+  feedback loop through the arm's own motion and must become incremental
+  visual-servoing rather than an absolute remap, with gain/latency now
+  affecting loop stability (§4 point 4).
 - The one-control-apply-call-site discipline (`main.py`'s sole
   `set_target()`) — general good control-loop practice worth carrying over
   verbatim, independent of Reachy specifics (§3, §4 point 4).
