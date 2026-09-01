@@ -179,3 +179,80 @@ stateDiagram-v2
       output += alpha * (target - output)   # EMA, every state
     end note
 ```
+
+## 3. Control loop integration
+
+`apps/social_app/social_app/main.py:52-88` runs a fixed-rate 50Hz loop
+(`LOOP_HZ = 50.0`) that fuses gaze and antenna animation state into a
+single per-tick call to `reachy_mini.set_target()`.
+
+**Drift-free timing.** The loop tracks a `next_tick` accumulator
+(`next_tick = time.monotonic()` before the loop, `next_tick +=
+LOOP_PERIOD_S` after each tick) rather than sleeping a naive `1/hz` each
+iteration. `sleep_for = next_tick - time.monotonic()` is computed fresh
+every tick, so any time spent doing work (tracker read, gaze update, the
+`set_target` call itself) is subtracted from the next sleep rather than
+silently accumulating drift; if the loop falls behind entirely (`sleep_for
+<= 0`), `next_tick` is reset to `time.monotonic()` rather than trying to
+catch up by busy-looping through missed ticks.
+
+**Per-tick sequence, verified directly against `main.py:59-79`:**
+
+1. `tracker.latest()` — non-blocking read of the most recent
+   `FaceObservation` from the background perception thread (section 1).
+2. `gaze.update(obs, now)` — pure smoothing function (section 2), returns
+   `(yaw_deg, pitch_deg)`.
+3. `create_head_pose(yaw=yaw_deg, pitch=pitch_deg, degrees=True)` →
+   `head_pose`.
+4. Independently, antenna animation state is computed each tick from a
+   `sin()` wave (or zeros if disabled) → `antennas_deg` → `antennas_rad`.
+5. Both `head_pose` (step 3) and `antennas_rad` (step 4) are fully computed
+   *before* the single call: `reachy_mini.set_target(head=head_pose,
+   antennas=antennas_rad)` at `main.py:76-79`.
+
+**Verification note.** Re-checked `main.py:59-79` directly: there is
+exactly one `set_target()` call in the loop body (line 76), and both of its
+arguments (`head_pose`, computed at line 60; `antennas_rad`, computed at
+line 74) are assigned before that call — not two separate calls, and
+nothing after the call feeds back into it that tick. The Mermaid flowchart
+below matches this.
+
+```mermaid
+flowchart LR
+    A[tracker.latest\nnon-blocking] --> B[gaze.update\nyaw_deg, pitch_deg]
+    B --> C[create_head_pose\nyaw, pitch, degrees=True]
+    D[antenna sin animation] --> E
+    C --> E[reachy_mini.set_target\nhead=..., antennas=...]
+    E -->|SDK clamps to safety limits| F[(Motors / MuJoCo sim)]
+    style E fill:#f96,stroke:#333
+```
+
+**The upstream "one `set_target()` call site" rule.** Per
+`docs/reachy_mini_notes.md:34-39`: `goto_target(...)` is for smooth,
+≥0.5s interpolated moves; `set_target(...)` is for real-time/high-frequency
+control (tracking, games, 10Hz+ loops), controlling `head` (6DOF Stewart
+platform pose), `antennas` (2 motors), and `body_yaw`. The architectural
+consequence — stated identically in `apps/social_app/plan.md:31-33` ("so
+there's exactly one `set_target()` call site in the whole app (per the
+SDK's own `control-loops.md` rule)") — is that **an app should have exactly
+one `set_target()` call site**, so that multiple behavior sources (gaze,
+idle animation, and in a future phase, conversation-driven moves) don't
+fight over the motor target on the same tick. They must instead be fused
+into a single pose/antenna-array pair before that one call, which is
+exactly why `gaze.py`'s `GazeController.update()` is a pure function
+returning a value rather than owning any I/O or calling `set_target`
+itself (section 2) — it composes into whatever single call site the host
+loop provides, rather than competing for one of its own.
+
+**Safety clamps (SDK-enforced, independent of app logic).** Per
+`docs/reachy_mini_notes.md:38`: head pitch/roll ±40°, head yaw ±180°, body
+yaw ±160°, head-vs-body yaw delta ≤65°. These are applied by the daemon/SDK
+itself regardless of what `main.py` computes and sends — the app cannot
+bypass them by construction. This matters for a future Franka/RealSense
+port: Franka's arm has 7 revolute joints and no equivalent "head" pose
+abstraction, so these specific numbers don't transfer at all. What *does*
+transfer is the concept — a hard, SDK/driver-enforced joint-limit clamp
+applied after whatever the control loop computes, independent of and
+downstream from app-level smoothing logic — which will need to be
+re-derived from Franka's own joint limits (e.g. via its controller's
+safety/limit configuration) rather than assumed away.
