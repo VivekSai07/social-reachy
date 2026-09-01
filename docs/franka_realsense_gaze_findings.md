@@ -1,3 +1,14 @@
+This document traces Reachy Mini's working webcam-driven gaze pipeline
+(`apps/social_app`) from source — perception, smoothing, and control-loop
+integration — and researches, without writing any code, whether and how the
+same architecture could port to a Franka Panda arm with a wrist-mounted
+RealSense camera (eye-in-hand), simulated in MuJoCo. It is a documentation
+spike only: nothing under `apps/` is modified. See the plan this doc was
+produced from —
+`docs/superpowers/plans/2026-09-01-franka-realsense-gaze-research.md` — on
+branch `research/franka-realsense-gaze`, for the task breakdown and
+self-review notes behind sections 1-4 below.
+
 ## 1. Perception layer
 
 `apps/social_app/social_app/perception.py`'s `WebcamFaceTracker` runs webcam
@@ -274,10 +285,10 @@ publicly available Franka URDF (DAE meshes converted to OBJ via Blender,
 then `obj2mjcf`; a convex decomposition of link5's collision mesh via
 V-HACD; the URDF loaded into MuJoCo and re-saved as MJCF), requires MuJoCo
 ≥2.3.3, and separately ships a `scene.xml` that adds a textured
-groundplane/skybox/haze around the robot. It documents modifications
-around `link7`/`link8` and the fingertips/gripper, but **does not itself
-document an explicit flange/end-effector body name or a camera-attachment
-example** — that requires opening the vendored `panda.xml` directly.
+groundplane/skybox/haze around the robot. The model includes gripper/fingertip-related assets around `link7`/`link8`
+(not independently re-verified against the README's own wording for this
+pass), but **does not itself document an explicit flange/end-effector body
+name or a camera-attachment example** — that requires opening the vendored `panda.xml` directly.
 **Not yet verified against the vendored XML**: the exact body name to
 parent a `<camera>` under (commonly a wrist/flange/`attachment_site`-style
 body in Menagerie models, but this repo does not yet vendor the model, so
@@ -376,3 +387,55 @@ flowchart LR
 - Whether `mujoco.Renderer`-based per-tick rendering can sustain the detector's needed frame rate without starving the physics step loop.
 - Which RealSense model's real extrinsics/FOV to mirror (D405 vs. D435i) for realism if this ever needs to match real hardware later — D405 (7cm–~50cm ideal depth range, ~1.5m max usable) is the common wrist-mount choice for its short minimum depth range, which matters for close-range manipulation; D435i has a much longer range (~0.2m–10m per Intel's published specs) but is less suited to close-in eye-in-hand work. Exact current datasheet numbers should be re-confirmed against Intel's own product/spec pages at spike time rather than trusted from this pass alone.
 - IK solver choice for converting a look-at target into a joint/Cartesian command (out of scope for this research doc — a separate spike).
+
+## Summary
+
+**Directly reusable, largely as-is:**
+
+- The face detector library, `reachy_mini.vision.face_detector.FaceDetector`
+  (YuNet ONNX) plus `Tracker.select()` — a general-purpose detector that
+  doesn't care whether frames come from `cv2.VideoCapture` or a MuJoCo
+  render (§1, §4 point 3).
+- The smoothing/hysteresis *shape* in `gaze.py` — EMA + two-tier timeout
+  (grace period vs. tracker-alive) + idle-sway fallback, as a pure,
+  I/O-free function taking an observation and returning a target (§2, §4
+  point 4).
+- The one-control-apply-call-site discipline (`main.py`'s sole
+  `set_target()`) — general good control-loop practice worth carrying over
+  verbatim, independent of Reachy specifics (§3, §4 point 4).
+- The "hard, driver/engine-enforced clamp downstream of app logic" concept —
+  the *mechanism* differs (SDK software clamp vs. MuJoCo `<joint range>`)
+  but the architectural pattern transfers (§3, §4 point 5).
+
+**Must be rebuilt, not ported:**
+
+- Target representation and IK: Franka has no head-pose abstraction, so a
+  yaw/pitch target must become an end-effector Cartesian pose or wrist
+  orientation, requiring an IK (or Cartesian controller) step that doesn't
+  exist in the Reachy pipeline at all (§3, §4 point 4).
+- The actuation call itself: `reachy_mini.set_target()` has no Franka/MuJoCo
+  equivalent — a position/velocity actuator command loop driven by
+  `mj_step` must be written from scratch (§4 point 4).
+- Safety clamp values: Reachy's ±40°/±180°/±160°/≤65° numbers are
+  Reachy-specific and don't transfer; Franka's own joint `range` limits
+  must be read from the vendored MJCF once it exists (§3, §4 point 5).
+- Sign/gain tuning (`yaw_sign`/`pitch_sign`/gains): explicitly not
+  analytically solvable for Reachy and won't be for a Franka look-at→IK
+  mapping either — expect a fresh empirical tuning pass against the new
+  camera/arm frame, not a transferable formula (§2, §4 comparison table).
+
+**Genuinely open (flagged for a hands-on spike, not resolved here):**
+
+- The exact Menagerie model filename, flange/end-effector body name, and
+  joint `range` values — none of this repo vendors `franka_emika_panda/`
+  yet, so these must be read from the actual XML once pulled in, not
+  guessed (§4 points 1, 5).
+- Frame-source adapter performance: whether `mujoco.Renderer`-based
+  per-tick rendering can sustain the detector's needed frame rate without
+  starving the physics step loop (§4 point 3, open questions).
+- Which RealSense model (D405 vs. D435i) to mirror for realistic
+  extrinsics/FOV, and the camera's exact mounting offset — both require
+  vendor datasheet/CAD data not gathered in this pass (§4 points 2, open
+  questions).
+- IK solver choice for the look-at-to-joint/Cartesian conversion — explicitly
+  out of scope for this doc (§4, open questions).
