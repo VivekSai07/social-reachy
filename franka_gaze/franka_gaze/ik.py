@@ -78,7 +78,14 @@ def _look_at_rotation(forward: np.ndarray, up_hint: np.ndarray) -> np.ndarray:
     camera-look-at basis construction.
     """
     right = np.cross(up_hint, forward)
-    right = right / np.linalg.norm(right)
+    right_norm = np.linalg.norm(right)
+    if right_norm < 1e-6:
+        raise ValueError(
+            "_look_at_rotation: forward and up_hint are nearly parallel "
+            f"(forward={forward!r}, up_hint={up_hint!r}); cannot construct "
+            "a look-at basis from a degenerate cross product."
+        )
+    right = right / right_norm
     up = np.cross(forward, right)
     return np.column_stack([right, up, forward])
 

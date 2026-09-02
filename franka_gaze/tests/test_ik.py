@@ -6,6 +6,7 @@ import pytest
 
 from franka_gaze.ik import (
     HOME_QPOS,
+    _orthonormal_basis,
     compute_home_pose,
     solve,
     yaw_pitch_to_target,
@@ -116,6 +117,23 @@ def test_solve_respects_joint_limits(model, data):
         qpos_adr = model.jnt_qposadr[joint_id]
         lo, hi = model.jnt_range[joint_id]
         assert lo - 1e-6 <= result[i] <= hi + 1e-6, f"joint{i + 1} out of range: {result[i]}"
+
+
+@pytest.mark.parametrize(
+    "direction",
+    [np.array([0.0, 0.0, 1.0]), np.array([0.0, 0.0, -1.0])],
+)
+def test_orthonormal_basis_near_vertical_direction(direction):
+    """direction nearly parallel to world_up ([0,0,1]) triggers the
+    world_up fallback to [0,1,0] -- must still return a valid orthonormal
+    basis, not NaNs from a near-zero cross product."""
+    right, up = _orthonormal_basis(direction)
+
+    np.testing.assert_allclose(np.linalg.norm(right), 1.0, atol=1e-9)
+    np.testing.assert_allclose(np.linalg.norm(up), 1.0, atol=1e-9)
+    np.testing.assert_allclose(np.dot(right, direction), 0.0, atol=1e-9)
+    np.testing.assert_allclose(np.dot(up, direction), 0.0, atol=1e-9)
+    np.testing.assert_allclose(np.dot(right, up), 0.0, atol=1e-9)
 
 
 def test_solve_no_nans(model, data):
