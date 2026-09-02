@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "franka_gaze"
+version = "0.1.0"
+description = "Franka Panda gaze/attention prototype in MuJoCo, reusing Reachy Mini's webcam face-tracking."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "social_app",
+    "mujoco>=3.0",
+    "numpy",
+]
+
+[tool.setuptools]
+package-dir = { "" = "." }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["franka_gaze*"]
+
+[tool.setuptools.package-data]
+franka_gaze = ["../models/**/*"]
