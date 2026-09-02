@@ -28,21 +28,21 @@ webcam, in the MuJoCo viewer, with no code changes needed to `YAW_SIGN`/
 expected at the end to be, but for a prototype it's perfect." No sign-flip
 or gain retuning was required for this pass.
 
-**Known issue — yaw axis is degenerate (not real gaze pointing).**
-`ik.py`'s `yaw_pitch_to_target` builds
-`target_mat = home_mat @ _rotz(yaw_rad) @ _rotx(pitch_rad)`, rotating about
-the hand's local Z axis — which for the Panda is the gripper *approach*
-axis. Rotating a frame about its own approach axis does not change where
-that axis points, so horizontal face motion (yaw) currently spins the
-gripper's wrist roll rather than aiming the end-effector at the person;
-only pitch actually redirects the pointing direction. This is almost
-certainly the concrete content of the "not what I expected" reaction above:
-the motion is visible, smooth, and face-correlated (qualitative bar
-passed), but the semantics aren't gaze. This is a documented, known
-limitation, not a blocker for this prototype — the next increment should
-replace `yaw_pitch_to_target` with a real look-at construction that aims
-the approach axis at a virtual face point, rather than composing local
-Euler rotations.
+**Fixed (2026-09-02) — yaw axis is now genuine look-at pointing.**
+The previous `yaw_pitch_to_target` composed local Euler rotations on
+`home_mat`, which rotated the hand about its own approach axis for yaw — a
+no-op for pointing direction (see git history, commit `352c364`, for the
+original bug). Replaced with a real look-at construction: a fixed
+`REFERENCE_DIRECTION`/`REFERENCE_DISTANCE_M` define a nominal "person zone"
+point in front of the arm's base (not the table), yaw/pitch pan/tilt around
+that point, and the target orientation is built via a genuine look-at basis
+(`_look_at_rotation`) aiming the approach axis at the resulting point, plus
+a small fixed `MAX_LEAN_M` (10cm) lean-in toward the look direction.
+Regression-tested (`test_nonzero_yaw_changes_target_orientation` would have
+failed under the old code). Manually verified in the sim viewer — user's
+assessment: "looks good at me, I'm impressed" — no `REFERENCE_DIRECTION`
+sign-flip was needed; the initial guess (world `+X`) was correct on the
+first try. Full design/implementation: `docs/plans/2026-09-02-franka-gaze-lookat-fix.md`.
 
 Known limitations carried over from the design spec, not yet addressed:
 no true eye-in-hand (camera stays world-fixed, per §5 of the research
