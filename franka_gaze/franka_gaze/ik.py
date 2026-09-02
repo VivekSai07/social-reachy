@@ -48,14 +48,39 @@ def compute_home_pose(model: mujoco.MjModel) -> tuple[np.ndarray, np.ndarray]:
     return home_pos, home_mat
 
 
-def _rotz(rad: float) -> np.ndarray:
-    c, s = np.cos(rad), np.sin(rad)
-    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+# Fixed reference geometry for the look-at construction. Unknown a priori,
+# same as social_app.gaze.GazeConfig's own yaw_sign/pitch_sign -- these are
+# starting guesses to be tuned empirically in the sim viewer, not derived
+# analytically. See franka_gaze/plan.md for the tuning procedure.
+REFERENCE_DISTANCE_M = 0.6  # nominal distance to the "person zone"
+REFERENCE_DIRECTION = np.array([1.0, 0.0, 0.0])  # world +X: starting guess for "where a person stands"
+MAX_LEAN_M = 0.10  # fixed lean-in distance toward the look direction
 
 
-def _rotx(rad: float) -> np.ndarray:
-    c, s = np.cos(rad), np.sin(rad)
-    return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+def _orthonormal_basis(direction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Returns (right, up) unit vectors forming an orthonormal basis with
+    `direction` (already unit length), for panning/tilting within the plane
+    perpendicular to it."""
+    world_up = np.array([0.0, 0.0, 1.0])
+    if abs(np.dot(direction, world_up)) > 0.99:
+        world_up = np.array([0.0, 1.0, 0.0])
+    right = np.cross(world_up, direction)
+    right = right / np.linalg.norm(right)
+    up = np.cross(direction, right)
+    up = up / np.linalg.norm(up)
+    return right, up
+
+
+def _look_at_rotation(forward: np.ndarray, up_hint: np.ndarray) -> np.ndarray:
+    """Builds a 3x3 rotation matrix whose local +Z axis (the Panda hand's
+    approach axis) points along `forward` (already unit length), using
+    `up_hint` to fix the remaining rotation about that axis. Standard
+    camera-look-at basis construction.
+    """
+    right = np.cross(up_hint, forward)
+    right = right / np.linalg.norm(right)
+    up = np.cross(forward, right)
+    return np.column_stack([right, up, forward])
 
 
 def yaw_pitch_to_target(
@@ -64,21 +89,37 @@ def yaw_pitch_to_target(
     yaw_deg: float,
     pitch_deg: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Orientation-only target: position stays fixed at home_pos (no depth
-    signal from a monocular webcam -- same angular-only approach
-    social_app.gaze uses for Reachy's head). Orientation is home_mat
-    rotated by yaw about the hand's local Z, then pitch about its local X.
+    """Look-at target: aims the hand's approach axis (local Z) at a virtual
+    point representing the tracked person, replacing the old approach of
+    composing local Euler rotations on home_mat (which rotated the hand
+    about its OWN approach axis for yaw -- a no-op for pointing direction;
+    see franka_gaze/plan.md's "Known issue" note this fixes).
 
-    yaw_sign/pitch_sign are intentionally NOT included here (unlike
-    social_app.gaze.GazeConfig) -- sign convention for this arm/camera pair
-    is unknown a priori and must be tuned empirically in the sim viewer,
-    same as Reachy's own GazeConfig.yaw_sign/pitch_sign. Task 4's main.py
-    is where that tuning constant lives.
+    At yaw=pitch=0 the target points at REFERENCE_POINT, a fixed nominal
+    "person zone" in front of the arm's base -- NOT home_mat's own approach
+    direction (which points at the table). yaw/pitch pan/tilt around that
+    point within the plane perpendicular to REFERENCE_DIRECTION. Position
+    leans a small fixed MAX_LEAN_M toward the look direction.
+
+    home_mat is intentionally unused for orientation (kept as a parameter
+    only for interface stability with main.py/solve(), which pass it
+    unconditionally every tick).
     """
+    del home_mat  # unused -- see docstring
+    reference_point = home_pos + REFERENCE_DISTANCE_M * REFERENCE_DIRECTION
+    right, up = _orthonormal_basis(REFERENCE_DIRECTION)
+
     yaw_rad = np.radians(yaw_deg)
     pitch_rad = np.radians(pitch_deg)
-    target_mat = home_mat @ _rotz(yaw_rad) @ _rotx(pitch_rad)
-    return home_pos.copy(), target_mat
+    offset = REFERENCE_DISTANCE_M * (np.tan(yaw_rad) * right + np.tan(pitch_rad) * up)
+    target_point = reference_point + offset
+
+    direction = target_point - home_pos
+    direction = direction / np.linalg.norm(direction)
+
+    target_mat = _look_at_rotation(direction, up)
+    target_pos = home_pos + MAX_LEAN_M * direction
+    return target_pos, target_mat
 
 
 def _mat_to_rotvec(mat: np.ndarray) -> np.ndarray:
