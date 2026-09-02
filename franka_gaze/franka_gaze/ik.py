@@ -114,16 +114,23 @@ def solve(
     hand_id = _hand_body_id(model)
     limits = _joint_limits(model)
 
+    # Scratch MjData, private to this solve -- must never touch the
+    # caller's live simulation state (main.py passes the same MjData the
+    # viewer renders and mj_step integrates from). Mirrors the pattern
+    # already used by compute_home_pose() above.
+    scratch = mujoco.MjData(model)
+    scratch.qpos[qpos_adrs] = qpos_init
+
     q = np.array(qpos_init, dtype=float).copy()
     jacp = np.zeros((3, model.nv))
     jacr = np.zeros((3, model.nv))
 
     for _ in range(max_iters):
-        data.qpos[qpos_adrs] = q
-        mujoco.mj_forward(model, data)
+        scratch.qpos[qpos_adrs] = q
+        mujoco.mj_forward(model, scratch)
 
-        cur_pos = data.xpos[hand_id]
-        cur_mat = data.xmat[hand_id].reshape(3, 3)
+        cur_pos = scratch.xpos[hand_id]
+        cur_mat = scratch.xmat[hand_id].reshape(3, 3)
 
         pos_err = target_pos - cur_pos
         rot_err = _mat_to_rotvec(target_mat @ cur_mat.T)
@@ -132,7 +139,7 @@ def solve(
         if np.linalg.norm(err) < tol:
             break
 
-        mujoco.mj_jacBody(model, data, jacp, jacr, hand_id)
+        mujoco.mj_jacBody(model, scratch, jacp, jacr, hand_id)
         dof_adrs = [model.jnt_dofadr[jid] for jid in _arm_joint_ids(model)]
         j_pos = jacp[:, dof_adrs]
         j_rot = jacr[:, dof_adrs]
