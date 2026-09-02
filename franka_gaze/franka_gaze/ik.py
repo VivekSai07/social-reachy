@@ -102,8 +102,9 @@ def yaw_pitch_to_target(
     about its OWN approach axis for yaw -- a no-op for pointing direction;
     see franka_gaze/plan.md's "Known issue" note this fixes).
 
-    At yaw=pitch=0 the target points at REFERENCE_POINT, a fixed nominal
-    "person zone" in front of the arm's base -- NOT home_mat's own approach
+    At yaw=pitch=0 the target points at reference_point (REFERENCE_DISTANCE_M
+    along REFERENCE_DIRECTION from home_pos), a fixed nominal "person zone"
+    in front of the arm's base -- NOT home_mat's own approach
     direction (which points at the table). yaw/pitch pan/tilt around that
     point within the plane perpendicular to REFERENCE_DIRECTION. Position
     leans a small fixed MAX_LEAN_M toward the look direction.
